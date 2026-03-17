@@ -46,6 +46,31 @@ Environment variables:
 - `NULLCLAW_WHATSMEOW_BRIDGE_DISPLAY_NAME`
   default `Chrome (Linux)`
 
+## Quick Start
+
+Build:
+
+```bash
+go build ./...
+```
+
+Run locally:
+
+```bash
+NULLCLAW_WHATSMEOW_BRIDGE_LISTEN=127.0.0.1:3301 \
+NULLCLAW_WHATSMEOW_BRIDGE_STATE_DIR=./state \
+./nullclaw-channel-whatsmeow-bridge
+```
+
+Run with bridge auth enabled:
+
+```bash
+NULLCLAW_WHATSMEOW_BRIDGE_LISTEN=127.0.0.1:3301 \
+NULLCLAW_WHATSMEOW_BRIDGE_STATE_DIR=./state \
+NULLCLAW_WHATSMEOW_BRIDGE_TOKEN=change-me \
+./nullclaw-channel-whatsmeow-bridge
+```
+
 ## Operator Flow
 
 ### QR flow
@@ -56,6 +81,12 @@ Environment variables:
 4. Link the device from the WhatsApp phone app.
 5. `GET /health` begins returning `logged_in=true`.
 
+Example:
+
+```bash
+curl http://127.0.0.1:3301/qr
+```
+
 ### Pair-code flow
 
 1. Start the bridge.
@@ -64,7 +95,65 @@ Environment variables:
 4. Complete linked-device flow on the phone.
 5. `GET /health` begins returning `logged_in=true`.
 
+Example:
+
+```bash
+curl \
+  -X POST \
+  -H 'Content-Type: application/json' \
+  http://127.0.0.1:3301/pair-code \
+  -d '{"phone_number":"551199999999","display_name":"Chrome (Linux)"}'
+```
+
+If `NULLCLAW_WHATSMEOW_BRIDGE_TOKEN` is set, add:
+
+```bash
+-H 'Authorization: Bearer change-me'
+```
+
 The bridge persists its real WhatsApp session in `state/whatsmeow.db`.
+
+## Full Operator CJM
+
+1. Start the bridge with a persistent `NULLCLAW_WHATSMEOW_BRIDGE_STATE_DIR`.
+2. Complete QR or pairing-code login.
+3. Verify health:
+
+```bash
+curl http://127.0.0.1:3301/health
+```
+
+Expected shape:
+
+```json
+{
+  "ok": true,
+  "connected": true,
+  "logged_in": true
+}
+```
+
+4. Validate inbound queue:
+
+```bash
+curl \
+  -X POST \
+  -H 'Content-Type: application/json' \
+  http://127.0.0.1:3301/poll \
+  -d '{"account_id":"wa-main","cursor":"0"}'
+```
+
+5. Validate outbound:
+
+```bash
+curl \
+  -X POST \
+  -H 'Content-Type: application/json' \
+  http://127.0.0.1:3301/send \
+  -d '{"account_id":"wa-main","to":"551199999999@s.whatsapp.net","text":"hello from bridge"}'
+```
+
+6. Once bridge traffic is healthy, wire it into `nullclaw`.
 
 ## nullclaw Integration
 
@@ -77,6 +166,37 @@ The existing example contract from `nullclaw` expects:
 
 This bridge implements those directly and also exposes edit/delete/reaction/read
 endpoints for future richer adapters.
+
+Example `nullclaw` config when used behind the existing HTTP adapter:
+
+```json
+{
+  "channels": {
+    "external": {
+      "accounts": {
+        "wa-web": {
+          "runtime_name": "whatsapp_web",
+          "transport": {
+            "command": "/opt/nullclaw/plugins/nullclaw-plugin-whatsapp-web",
+            "timeout_ms": 10000
+          },
+          "config": {
+            "bridge_url": "http://127.0.0.1:3301",
+            "api_key": "change-me",
+            "allow_from": ["*"]
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Auth split:
+
+- bridge auth is `Authorization: Bearer <token>` on HTTP requests
+- WhatsApp auth is QR or pairing-code login handled inside this bridge
+- `nullclaw` never sees the real WhatsApp linked-device credentials
 
 ## Payload Shapes
 
@@ -120,6 +240,40 @@ Request:
 }
 ```
 
+### `POST /edit`
+
+```json
+{
+  "message_id": "base64url-message-ref",
+  "text": "edited text"
+}
+```
+
+### `POST /delete`
+
+```json
+{
+  "message_id": "base64url-message-ref"
+}
+```
+
+### `POST /reaction`
+
+```json
+{
+  "message_id": "base64url-message-ref",
+  "emoji": "✅"
+}
+```
+
+### `POST /read`
+
+```json
+{
+  "message_id": "base64url-message-ref"
+}
+```
+
 ### `POST /pair-code`
 
 Request:
@@ -158,8 +312,25 @@ message without maintaining a separate lookup table in the plugin.
 go build ./...
 ```
 
+## Validation
+
+```bash
+go test ./...
+go build ./...
+```
+
+## Troubleshooting
+
+- `logged_in` stays false:
+  complete QR or pair-code flow first; the bridge is correct to stay unhealthy before that.
+- Empty `/poll` responses:
+  make sure a real inbound text message reached the linked device after login.
+- 401 responses:
+  verify the Bearer token matches `NULLCLAW_WHATSMEOW_BRIDGE_TOKEN`.
+- Lost session after restart:
+  confirm `NULLCLAW_WHATSMEOW_BRIDGE_STATE_DIR` is persistent and writable.
+
 ## References
 
 - [whatsmeow README](https://github.com/tulir/whatsmeow)
 - [whatsmeow pkg docs](https://pkg.go.dev/go.mau.fi/whatsmeow)
-
