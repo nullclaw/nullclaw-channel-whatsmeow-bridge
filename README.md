@@ -71,6 +71,17 @@ NULLCLAW_WHATSMEOW_BRIDGE_TOKEN=change-me \
 ./nullclaw-channel-whatsmeow-bridge
 ```
 
+Docker Compose example:
+
+```bash
+cd deploy
+docker compose up -d
+```
+
+systemd example:
+
+- [deploy/systemd/nullclaw-channel-whatsmeow-bridge.service](./deploy/systemd/nullclaw-channel-whatsmeow-bridge.service)
+
 ## Operator Flow
 
 ### QR flow
@@ -112,6 +123,19 @@ If `NULLCLAW_WHATSMEOW_BRIDGE_TOKEN` is set, add:
 ```
 
 The bridge persists its real WhatsApp session in `state/whatsmeow.db`.
+
+## Production
+
+For system hardening and deploy notes, see:
+
+- [docs/production-hardening.md](./docs/production-hardening.md)
+
+Included assets:
+
+- [Dockerfile](./Dockerfile)
+- [deploy/docker-compose.yml](./deploy/docker-compose.yml)
+- [deploy/systemd/nullclaw-channel-whatsmeow-bridge.service](./deploy/systemd/nullclaw-channel-whatsmeow-bridge.service)
+- [.env.example](./.env.example)
 
 ## Full Operator CJM
 

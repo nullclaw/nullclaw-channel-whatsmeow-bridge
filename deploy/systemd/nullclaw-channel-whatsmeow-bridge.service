@@ -1,0 +1,28 @@
+[Unit]
+Description=nullclaw whatsmeow bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nullclaw
+Group=nullclaw
+ExecStart=/usr/local/bin/nullclaw-channel-whatsmeow-bridge
+Restart=always
+RestartSec=3
+StateDirectory=nullclaw-channel-whatsmeow-bridge
+Environment="NULLCLAW_WHATSMEOW_BRIDGE_LISTEN=127.0.0.1:3301"
+Environment="NULLCLAW_WHATSMEOW_BRIDGE_STATE_DIR=/var/lib/nullclaw-channel-whatsmeow-bridge"
+Environment="NULLCLAW_WHATSMEOW_BRIDGE_DISPLAY_NAME=Chrome (Linux)"
+EnvironmentFile=-/etc/default/nullclaw-channel-whatsmeow-bridge
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ReadWritePaths=/var/lib/nullclaw-channel-whatsmeow-bridge
+
+[Install]
+WantedBy=multi-user.target
+

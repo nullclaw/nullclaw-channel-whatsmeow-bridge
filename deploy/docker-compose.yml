@@ -1,0 +1,20 @@
+services:
+  whatsmeow-bridge:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: nullclaw/nullclaw-channel-whatsmeow-bridge:local
+    restart: unless-stopped
+    environment:
+      NULLCLAW_WHATSMEOW_BRIDGE_LISTEN: 0.0.0.0:3301
+      NULLCLAW_WHATSMEOW_BRIDGE_STATE_DIR: /var/lib/nullclaw-channel-whatsmeow-bridge
+      NULLCLAW_WHATSMEOW_BRIDGE_TOKEN: change-me
+      NULLCLAW_WHATSMEOW_BRIDGE_DISPLAY_NAME: Chrome (Linux)
+    ports:
+      - "127.0.0.1:3301:3301"
+    volumes:
+      - whatsmeow_bridge_state:/var/lib/nullclaw-channel-whatsmeow-bridge
+
+volumes:
+  whatsmeow_bridge_state:
+
