@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -27,12 +28,19 @@ import (
 )
 
 const maxQueueMessages = 1024
+const maxLogEntries = 500
 
 type config struct {
 	listenAddr  string
 	stateDir    string
 	authToken   string
 	displayName string
+}
+
+type logEntry struct {
+	Timestamp time.Time `json:"timestamp"`
+	Level     string    `json:"level"`
+	Message   string    `json:"message"`
 }
 
 type bridge struct {
@@ -47,6 +55,7 @@ type bridge struct {
 	lastPairingCode string
 	queue           []bridgeMessage
 	nextCursor      int64
+	logs            []logEntry
 }
 
 type bridgeMessage struct {
@@ -109,6 +118,8 @@ func main() {
 	mux.HandleFunc("/delete", b.withAuth(b.handleDelete))
 	mux.HandleFunc("/reaction", b.withAuth(b.handleReaction))
 	mux.HandleFunc("/read", b.withAuth(b.handleRead))
+	mux.HandleFunc("/logs", b.withAuth(b.handleLogs))
+	mux.HandleFunc("/restart", b.withAuth(b.handleRestart))
 
 	server := &http.Server{
 		Addr:              cfg.listenAddr,
@@ -127,6 +138,7 @@ func main() {
 	}()
 
 	log.Printf("whatsmeow bridge listening on %s", cfg.listenAddr)
+	b.appendLog("info", fmt.Sprintf("bridge started on %s", cfg.listenAddr))
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("server failed: %v", err)
 	}
@@ -356,6 +368,7 @@ func (b *bridge) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	b.appendLog("info", fmt.Sprintf("message sent to %s", target.String()))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"accepted":   true,
 		"message_id": encodeMessageRef(messageRef{ID: resp.ID, ChatJID: target.String(), FromMe: true, TimestampMS: resp.Timestamp.UnixMilli()}),
@@ -462,6 +475,79 @@ func (b *bridge) handleReaction(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (b *bridge) handleLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// Optional ?limit=N&level=error query params
+	limitStr := r.URL.Query().Get("limit")
+	levelFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("level")))
+	limit := 100
+	if limitStr != "" {
+		if parsed, err := strconv.Atoi(limitStr); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	if limit > maxLogEntries {
+		limit = maxLogEntries
+	}
+
+	b.mu.Lock()
+	var filtered []logEntry
+	for i := len(b.logs) - 1; i >= 0 && len(filtered) < limit; i-- {
+		entry := b.logs[i]
+		if levelFilter != "" && strings.ToLower(entry.Level) != levelFilter {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	b.mu.Unlock()
+
+	// Reverse to chronological order
+	for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
+		filtered[i], filtered[j] = filtered[j], filtered[i]
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"count": len(filtered),
+		"logs":  filtered,
+	})
+}
+
+func (b *bridge) handleRestart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	b.appendLog("info", "restart requested via API")
+	log.Println("restart requested via API — disconnecting client")
+
+	// Disconnect the current client
+	b.client.Disconnect()
+
+	// Reconnect after a short delay
+	go func() {
+		time.Sleep(2 * time.Second)
+		if err := b.client.Connect(); err != nil {
+			errMsg := fmt.Sprintf("reconnect failed: %v", err)
+			b.setLastError(errMsg)
+			b.appendLog("error", errMsg)
+			log.Printf("restart: %s", errMsg)
+		} else {
+			b.appendLog("info", "reconnected successfully after restart")
+			log.Println("restart: reconnected successfully")
+		}
+	}()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accepted": true,
+		"message":  "bridge is restarting (disconnect + reconnect)",
+	})
+}
+
 func (b *bridge) handleRead(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -506,14 +592,17 @@ func (b *bridge) handleEvent(evt any) {
 		b.qrCode = ""
 		b.lastError = ""
 		b.mu.Unlock()
+		b.appendLog("info", "connected to WhatsApp")
 	case *events.Disconnected:
 		b.setLastError("disconnected")
+		b.appendLog("warn", "disconnected from WhatsApp")
 	case *events.LoggedOut:
 		b.mu.Lock()
 		b.qrEvent = "logged_out"
 		b.qrCode = ""
 		b.lastError = "logged_out"
 		b.mu.Unlock()
+		b.appendLog("error", "logged out — re-authentication required")
 	}
 }
 
@@ -572,6 +661,21 @@ func (b *bridge) handleInboundMessage(evt *events.Message) {
 func (b *bridge) setLastError(message string) {
 	b.mu.Lock()
 	b.lastError = message
+	b.mu.Unlock()
+	b.appendLog("error", message)
+}
+
+func (b *bridge) appendLog(level, message string) {
+	entry := logEntry{
+		Timestamp: time.Now().UTC(),
+		Level:     level,
+		Message:   message,
+	}
+	b.mu.Lock()
+	b.logs = append(b.logs, entry)
+	if len(b.logs) > maxLogEntries {
+		b.logs = append([]logEntry(nil), b.logs[len(b.logs)-maxLogEntries:]...)
+	}
 	b.mu.Unlock()
 }
 
